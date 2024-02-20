@@ -9,7 +9,13 @@ Buffers_tracker.__index = Buffers_tracker
 ---@param buffer_id number
 ---@param from_line? number
 ---@param to_line? number
+---@return number
 function Buffers_tracker:get_width(buffer_id, from_line, to_line)
+  local lines_tracker = self:_get_lines_tracker(buffer_id)
+  if not lines_tracker then
+    return 0
+  end
+
   if from_line == nil then
     from_line = 1
   end
@@ -18,29 +24,71 @@ function Buffers_tracker:get_width(buffer_id, from_line, to_line)
     to_line = vim.api.nvim_buf_line_count(buffer_id)
   end
 
-  local buffer_lines_tracker = self._buffer_lines_trackers[buffer_id]
-  if buffer_lines_tracker == nil then
-    error("There is no such buffer: " .. tostring(buffer_id))
-  end
-  buffer_lines_tracker:get_max_width(from_line, to_line)
+  return lines_tracker:get_max_length(from_line, to_line)
 end
 
 ---@param buffer_id number
 ---@param line number
 function Buffers_tracker:get_line_width(buffer_id, line)
-  local buffer_lines_tracker = self._buffer_lines_trackers[buffer_id]
-  if buffer_lines_tracker == nil then
-    error("There is no such buffer: " .. tostring(buffer_id))
+  return self:get_width(buffer_id, line, line)
+end
+
+---@return DynamicColumn_BufferLinesTracker?
+function Buffers_tracker:_get_lines_tracker(buffer_id)
+  if buffer_id == 0 then
+    buffer_id = vim.api.nvim_get_current_buf()
   end
 
-  return buffer_lines_tracker.line_widths[line]
+  local lines_tracker = self._buffer_lines_trackers[buffer_id]
+  if lines_tracker then
+    return lines_tracker
+  end
+
+  if not vim.fn.bufexists(buffer_id) then
+    return nil
+  end
+
+  if not vim.fn.bufloaded(buffer_id) then
+    return nil
+  end
+
+  lines_tracker = new_buffer_lines_tracker(buffer_id)
+  local attach_status = vim.api.nvim_buf_attach(buffer_id, false, {
+    on_lines = function(_, _, _, from, original_to, new_to)
+      if not self._running then
+        return true
+      end
+
+      local tracker = self._buffer_lines_trackers[buffer_id]
+      if not tracker then
+        return true
+      end
+
+      tracker:update_lines(from + 1, original_to, new_to)
+    end,
+
+    on_reload = function()
+      if not self._running then
+        return
+      end
+
+      local tracker = self._buffer_lines_trackers[buffer_id]
+      if not tracker then
+        return
+      end
+
+      tracker:reload()
+    end,
+  })
+  assert(attach_status, "Unreachable: nvim_buf_attach failed")
+
+  self._buffer_lines_trackers[buffer_id] = lines_tracker
+  return lines_tracker
 end
 
 function Buffers_tracker:stop()
   self._running = false
-  for _, line_tracker in ipairs(self._buffer_lines_trackers) do
-    line_tracker:stop()
-  end
+  self._buffer_lines_trackers = {}
 end
 
 ----------------------------------------------------------------------
@@ -53,28 +101,15 @@ local new = function()
   }
   setmetatable(tracker, Buffers_tracker)
 
-  vim.api.nvim_create_autocmd({ "BufNew", "BufWipeout" }, {
+  vim.api.nvim_create_autocmd("BufUnload", {
     callback = function(event)
       if not tracker._running then
         return true
       end
 
-      if event.event == "BufNew" then
-        tracker._buffer_lines_trackers[event.buf] =
-          new_buffer_lines_tracker(event.buf)
-      elseif event.event == "BufWipeout" then
-        tracker._buffer_lines_trackers[event.buf]:stop()
-        tracker._buffer_lines_trackers[event.buf] = nil
-      else
-        error("Unreachable: Unexpected event: " .. event.event)
-      end
+      tracker._buffer_lines_trackers[event.buf] = nil
     end,
   })
-
-  local buffer_ids = vim.api.nvim_list_bufs()
-  for _, id in ipairs(buffer_ids) do
-    tracker._buffer_lines_trackers[id] = new_buffer_lines_tracker(id)
-  end
 
   return tracker
 end
