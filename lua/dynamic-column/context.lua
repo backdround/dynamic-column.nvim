@@ -22,12 +22,13 @@ local generate = function(buffers_tracker, window_id, buffer_id)
   local current_line = vim.api.nvim_win_get_cursor(window_id)[1]
   scope.line = buffers_tracker:get_line_width(buffer_id, current_line)
 
+  scope.cursor = vim.api.nvim_win_get_cursor(window_id)[2]
+
   local top = nil
   local bottom = nil
   vim.api.nvim_win_call(window_id, function()
     top = vim.fn.line('w0')
     bottom = vim.fn.line('w$')
-    scope.cursor = vim.fn.virtcol(".")
   end)
 
   scope.visible = buffers_tracker:get_width(buffer_id, top, bottom)
